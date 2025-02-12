@@ -21,6 +21,7 @@ pub async fn run() -> Result<(), EventLoopError> {
     // Calling helps us avoid manually tracking if the surface is
     // configured or not (it can become invalidated for example
     // when changing windows - me thinks)
+    // Ummmmmm....or https://github.com/sotrh/learn-wgpu/issues/585
     state.resize(state.size);
 
     event_loop.run(move |event, control_flow| match event {
@@ -78,6 +79,7 @@ fn on_redraw_requested<'a>(
     state.window().request_redraw();
 
     state.update();
+
     match state.render() {
         Ok(_) => {}
         // Reconfigure the surface if it's lost or outdated
@@ -103,11 +105,12 @@ struct State<'a> {
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
+    surface_configuration: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     window: &'a Window,
     clear_color: wgpu::Color,
-    render_pipeline: wgpu::RenderPipeline,
+    render_pipelines: Vec<wgpu::RenderPipeline>,
+    active_render_pipeline_index: usize,
 }
 
 #[allow(dead_code)]
@@ -182,7 +185,7 @@ impl<'a> State<'a> {
             .copied()
             .unwrap_or(surface_caps.formats[0]);
 
-        let config = wgpu::SurfaceConfiguration {
+        let surface_configuration = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
@@ -208,9 +211,6 @@ impl<'a> State<'a> {
             desired_maximum_frame_latency: 2,
         };
 
-        // Can also:
-        // let shader =
-        //     device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
         let shader =
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Shader"),
@@ -219,6 +219,41 @@ impl<'a> State<'a> {
                 ),
             });
 
+        let render_pipeline = Self::create_render_pipeline(
+            &device,
+            &surface_configuration,
+            &shader,
+        );
+
+        let render_pipeline2 = Self::create_render_pipeline(
+            &device,
+            &surface_configuration,
+            &device.create_shader_module(wgpu::include_wgsl!("shader2.wgsl")),
+        );
+
+        Self {
+            surface,
+            device,
+            queue,
+            surface_configuration,
+            size,
+            window,
+            render_pipelines: vec![render_pipeline, render_pipeline2],
+            active_render_pipeline_index: 0,
+            clear_color: wgpu::Color {
+                r: 0.03,
+                g: 0.03,
+                b: 0.03,
+                a: 1.0,
+            },
+        }
+    }
+
+    fn create_render_pipeline(
+        device: &wgpu::Device,
+        surface_configuration: &wgpu::SurfaceConfiguration,
+        shader: &wgpu::ShaderModule,
+    ) -> wgpu::RenderPipeline {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
@@ -241,7 +276,7 @@ impl<'a> State<'a> {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     targets: &[Some(wgpu::ColorTargetState {
-                        format: config.format,
+                        format: surface_configuration.format,
                         blend: Some(wgpu::BlendState::REPLACE),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -271,21 +306,7 @@ impl<'a> State<'a> {
                 cache: None,
             });
 
-        Self {
-            surface,
-            device,
-            queue,
-            config,
-            size,
-            window,
-            clear_color: wgpu::Color {
-                r: 0.03,
-                g: 0.03,
-                b: 0.03,
-                a: 1.0,
-            },
-            render_pipeline,
-        }
+        render_pipeline
     }
 
     pub fn window(&self) -> &Window {
@@ -295,9 +316,10 @@ impl<'a> State<'a> {
     fn resize(&mut self, new_size: winit::dpi::PhysicalSize<u32>) {
         if new_size.width > 0 && new_size.height > 0 {
             self.size = new_size;
-            self.config.width = new_size.width;
-            self.config.height = new_size.height;
-            self.surface.configure(&self.device, &self.config);
+            self.surface_configuration.width = new_size.width;
+            self.surface_configuration.height = new_size.height;
+            self.surface
+                .configure(&self.device, &self.surface_configuration);
         }
     }
 
@@ -314,6 +336,21 @@ impl<'a> State<'a> {
                 };
                 true
             }
+            WindowEvent::KeyboardInput { event, .. } => match event {
+                KeyEvent {
+                    state: ElementState::Pressed,
+                    physical_key: PhysicalKey::Code(code),
+                    ..
+                } => match code {
+                    KeyCode::Space => {
+                        self.active_render_pipeline_index =
+                            (self.active_render_pipeline_index + 1) % 2;
+                        true
+                    }
+                    _ => false,
+                },
+                _ => false,
+            },
             _ => false,
         }
     }
@@ -360,7 +397,10 @@ impl<'a> State<'a> {
                     timestamp_writes: None,
                 });
 
-            render_pass.set_pipeline(&self.render_pipeline);
+            let active_render_pipeline =
+                &self.render_pipelines[self.active_render_pipeline_index];
+
+            render_pass.set_pipeline(&active_render_pipeline);
             render_pass.draw(0..3, 0..1);
         }
 
