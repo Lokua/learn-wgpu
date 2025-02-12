@@ -95,7 +95,7 @@ max_width = 80
 #normalize_comments = true
 
 # Format doc comments
-#wrap_comments = false
+wrap_comments = true
 
 # Ignore macros that match this regex
 #ignore = []

@@ -19,7 +19,7 @@ pub async fn run() -> Result<(), EventLoopError> {
 
     // Calling helps us avoid manually tracking if the surface is 
     // configured or not (it can become invalidated for example 
-    // when chaning windows - me thinks)
+    // when changing windows - me thinks)
     state.resize(state.size);
 
     event_loop.run(move |event, control_flow| match event {
@@ -97,7 +97,7 @@ impl<'a> State<'a> {
             ..Default::default()
         });
 
-        // he surface is the part of the window that we draw to.
+        // The surface is the part of the window that we draw to.
         // We need it to draw directly to the screen
         let surface = instance.create_surface(window).unwrap();
 
@@ -162,13 +162,17 @@ impl<'a> State<'a> {
 
             // present_mode uses wgpu::PresentMode enum, which determines
             // how to sync the surface with the display.
-            // For the sake of simplicity, we select the first available option.
-            // If you do not want runtime selection, `PresentMode::Fifo` will
-            // cap the display rate at the display's framerate.
-            // This is essentially VSync. This mode is guaranteed to be supported on all platforms.
-            // There are other options, and you can see all of them in the docs
+            // For the sake of simplicity, we select the first available
+            // option. If you do not want runtime selection, 
+            // `PresentMode::Fifo` will cap the display rate at the display's
+            // framerate. This is essentially VSync.
+            // This mode is guaranteed to be supported on all platforms.
+            // 
+            // There are other options, and you can see all of them in the docs:
             // https://docs.rs/wgpu/latest/wgpu/enum.PresentMode.html
-            // `PresentMode::AutoVsync` and `PresentMode::AutoNoVsync` have fallback support and therefore will work on all platforms.
+            // 
+            // `PresentMode::AutoVsync` and `PresentMode::AutoNoVsync` have
+            // fallback support and therefore will work on all platforms.
             present_mode: surface_caps.present_modes[0],
 
             alpha_mode: surface_caps.alpha_modes[0],
@@ -220,8 +224,14 @@ impl<'a> State<'a> {
         );
 
         {
-            // begin_render_pass() borrows encoder mutably (aka &mut self).
-            // We can't call encoder.finish() until we release that mutable borrow. The block tells Rust to drop any variables within it when the code leaves that scope, thus releasing the mutable borrow on encoder and allowing us to finish() it. If you don't like the {}, you can also use drop(render_pass) to achieve the same effect.
+            // begin_render_pass() borrows encoder mutably (aka &mut self). We
+            // can't call encoder.finish() until we release that mutable borrow.
+            // The block tells Rust to drop any variables within it when the
+            // code leaves that scope, thus releasing the mutable borrow on
+            // encoder and allowing us to finish() it.
+            //
+            // If you don't like the {}, you can also use drop(render_pass) to
+            // achieve the same effect.
             let _render_pass =
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Render Pass"),
