@@ -1,3 +1,4 @@
+use env_logger::{Builder, Env};
 use winit::window::Window;
 use winit::{
     error::EventLoopError,
@@ -8,7 +9,7 @@ use winit::{
 };
 
 pub async fn run() -> Result<(), EventLoopError> {
-    env_logger::init();
+    init_logger();
     let event_loop = EventLoop::new().unwrap();
     let window = WindowBuilder::new()
         .with_title("Learn WGPU")
@@ -17,61 +18,84 @@ pub async fn run() -> Result<(), EventLoopError> {
 
     let mut state = State::new(&window).await;
 
-    // Calling helps us avoid manually tracking if the surface is 
-    // configured or not (it can become invalidated for example 
+    // Calling helps us avoid manually tracking if the surface is
+    // configured or not (it can become invalidated for example
     // when changing windows - me thinks)
     state.resize(state.size);
 
     event_loop.run(move |event, control_flow| match event {
-        Event::WindowEvent {
-            ref event,
-            window_id,
-        } if window_id == state.window().id() => {
-            if !state.input(event) {
-                match event {
-                    WindowEvent::CloseRequested
-                    | WindowEvent::KeyboardInput {
-                        event:
-                            KeyEvent {
-                                state: ElementState::Pressed,
-                                physical_key: PhysicalKey::Code(KeyCode::Escape),
-                                ..
-                            },
-                        ..
-                    } => control_flow.exit(),
-                    WindowEvent::Resized(physical_size) => {
-                        state.resize(*physical_size);
-                    }
-                    WindowEvent::RedrawRequested => {
-                        // This tells winit that we want another frame after this one
-                        state.window().request_redraw();
-            
-                        state.update();
-                        match state.render() {
-                            Ok(_) => {}
-                            // Reconfigure the surface if it's lost or outdated
-                            Err(
-                                wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated,
-                            ) => state.resize(state.size),
+        Event::WindowEvent { event, window_id } => {
+            if window_id != state.window().id() {
+                return;
+            }
 
-                            // The system is out of memory, we should probably quit
-                            Err(wgpu::SurfaceError::OutOfMemory | wgpu::SurfaceError::Other) => {
-                                log::error!("OutOfMemory");
-                                control_flow.exit();
-                            }
-            
-                            // This happens when the a frame takes too long to present
-                            Err(wgpu::SurfaceError::Timeout) => {
-                                log::warn!("Surface timeout")
-                            }
-                        }
-                    }
-                    _ => {}
+            if state.input(&event) {
+                return;
+            }
+
+            match event {
+                WindowEvent::CloseRequested => control_flow.exit(),
+                WindowEvent::KeyboardInput { event, .. } => {
+                    on_keyboard_input(&mut state, &event, control_flow);
                 }
+                WindowEvent::Resized(physical_size) => {
+                    state.resize(physical_size);
+                }
+                WindowEvent::RedrawRequested => {
+                    on_redraw_requested(&mut state, control_flow);
+                }
+                _ => {}
             }
         }
         _ => {}
     })
+}
+
+fn on_keyboard_input<'a>(
+    _state: &mut State<'a>,
+    event: &KeyEvent,
+    control_flow: &winit::event_loop::EventLoopWindowTarget<()>,
+) {
+    match event {
+        KeyEvent {
+            state: ElementState::Pressed,
+            physical_key: PhysicalKey::Code(code),
+            ..
+        } => match code {
+            KeyCode::Escape => control_flow.exit(),
+            // Handle other keys...
+            _ => {}
+        },
+        _ => {}
+    }
+}
+
+fn on_redraw_requested<'a>(
+    state: &mut State<'a>,
+    control_flow: &winit::event_loop::EventLoopWindowTarget<()>,
+) {
+    // This tells winit that we want another frame after this one
+    state.window().request_redraw();
+
+    state.update();
+    match state.render() {
+        Ok(_) => {}
+        // Reconfigure the surface if it's lost or outdated
+        Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
+            state.resize(state.size)
+        }
+
+        // The system is out of memory, we should probably quit
+        Err(wgpu::SurfaceError::OutOfMemory | wgpu::SurfaceError::Other) => {
+            log::error!("OutOfMemory");
+            control_flow.exit();
+        }
+
+        // This happens when the a frame takes too long to present
+        Err(wgpu::SurfaceError::Timeout) => {
+            log::warn!("Surface timeout")
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -82,6 +106,8 @@ struct State<'a> {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     window: &'a Window,
+    clear_color: wgpu::Color,
+    render_pipeline: wgpu::RenderPipeline,
 }
 
 #[allow(dead_code)]
@@ -103,21 +129,23 @@ impl<'a> State<'a> {
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
-                // power_preference has two variants: LowPower and HighPerformance.
-                // LowPower will pick an adapter that favors battery life, such as an
-                // integrated GPU. HighPerformance will pick an adapter for more
-                // power-hungry yet more performant GPU's, such as a dedicated graphics
-                // card. WGPU will favor LowPower if there is no adapter for the
-                // HighPerformance option.
+                // power_preference has two variants: LowPower and
+                // HighPerformance. LowPower will pick an adapter that favors
+                // battery life, such as an integrated GPU. HighPerformance will
+                // pick an adapter for more power-hungry yet more performant
+                // GPU's, such as a dedicated graphics card. WGPU will favor
+                // LowPower if there is no adapter for the HighPerformance
+                // option.
                 power_preference: wgpu::PowerPreference::default(),
 
-                // The compatible_surface field tells wgpu to find an adapter that can
-                // present to the supplied surface.
+                // The compatible_surface field tells wgpu to find an adapter
+                // that can present to the supplied surface.
                 compatible_surface: Some(&surface),
 
-                // The force_fallback_adapter forces wgpu to pick an adapter that will
-                // work on all hardware. This usually means that the rendering backend
-                // will use a "software" system instead of hardware such as a GPU.
+                // The force_fallback_adapter forces wgpu to pick an adapter
+                // that will work on all hardware. This usually means that the
+                // rendering backend will use a "software" system instead of
+                // hardware such as a GPU.
                 force_fallback_adapter: false,
             })
             .await
@@ -163,14 +191,14 @@ impl<'a> State<'a> {
             // present_mode uses wgpu::PresentMode enum, which determines
             // how to sync the surface with the display.
             // For the sake of simplicity, we select the first available
-            // option. If you do not want runtime selection, 
+            // option. If you do not want runtime selection,
             // `PresentMode::Fifo` will cap the display rate at the display's
             // framerate. This is essentially VSync.
             // This mode is guaranteed to be supported on all platforms.
-            // 
+            //
             // There are other options, and you can see all of them in the docs:
             // https://docs.rs/wgpu/latest/wgpu/enum.PresentMode.html
-            // 
+            //
             // `PresentMode::AutoVsync` and `PresentMode::AutoNoVsync` have
             // fallback support and therefore will work on all platforms.
             present_mode: surface_caps.present_modes[0],
@@ -180,6 +208,69 @@ impl<'a> State<'a> {
             desired_maximum_frame_latency: 2,
         };
 
+        // Can also:
+        // let shader =
+        //     device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+        let shader =
+            device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("Shader"),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("shader.wgsl").into(),
+                ),
+            });
+
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Render Pipeline Layout"),
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            });
+
+        let render_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("Render Pipeline"),
+                layout: Some(&render_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options:
+                        wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: config.format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options:
+                        wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    // Setting this to anything other than Fill requires
+                    // `Features::NON_FILL_POLYGON_MODE`
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    // Requires `Features::DEPTH_CLIP_CONTROL`
+                    unclipped_depth: false,
+                    // Requires `Features::CONSERVATIVE_RASTERIZATION`
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview: None,
+                cache: None,
+            });
+
         Self {
             surface,
             device,
@@ -187,6 +278,13 @@ impl<'a> State<'a> {
             config,
             size,
             window,
+            clear_color: wgpu::Color {
+                r: 0.03,
+                g: 0.03,
+                b: 0.03,
+                a: 1.0,
+            },
+            render_pipeline,
         }
     }
 
@@ -200,12 +298,24 @@ impl<'a> State<'a> {
             self.config.width = new_size.width;
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
-        } 
+        }
     }
 
-    #[allow(unused_variables)]
     fn input(&mut self, event: &WindowEvent) -> bool {
-        false
+        match event {
+            WindowEvent::CursorMoved { position, .. } => {
+                let x = position.x / self.size.width as f64;
+                let y = position.y / self.size.height as f64;
+                self.clear_color = wgpu::Color {
+                    r: x,
+                    g: y,
+                    b: (x + y) / 2.0,
+                    a: 1.0,
+                };
+                true
+            }
+            _ => false,
+        }
     }
 
     fn update(&mut self) {}
@@ -224,7 +334,7 @@ impl<'a> State<'a> {
         );
 
         {
-            // begin_render_pass() borrows encoder mutably (aka &mut self). We
+            // Begin_render_pass() borrows encoder mutably (aka &mut self). We
             // can't call encoder.finish() until we release that mutable borrow.
             // The block tells Rust to drop any variables within it when the
             // code leaves that scope, thus releasing the mutable borrow on
@@ -232,7 +342,7 @@ impl<'a> State<'a> {
             //
             // If you don't like the {}, you can also use drop(render_pass) to
             // achieve the same effect.
-            let _render_pass =
+            let mut render_pass =
                 encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("Render Pass"),
                     color_attachments: &[Some(
@@ -240,12 +350,7 @@ impl<'a> State<'a> {
                             view: &view,
                             resolve_target: None,
                             ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color {
-                                    r: 0.03,
-                                    g: 0.03,
-                                    b: 0.03,
-                                    a: 1.0,
-                                }),
+                                load: wgpu::LoadOp::Clear(self.clear_color),
                                 store: wgpu::StoreOp::Store,
                             },
                         },
@@ -254,12 +359,20 @@ impl<'a> State<'a> {
                     occlusion_query_set: None,
                     timestamp_writes: None,
                 });
+
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.draw(0..3, 0..1);
         }
 
-        // submit will accept anything that implements IntoIter
+        // Submit will accept anything that implements `IntoIter`
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
         Ok(())
     }
+}
+
+pub fn init_logger() {
+    let filter = Env::default().default_filter_or("learn_wgpu=info");
+    Builder::from_env(filter).init();
 }
