@@ -1,4 +1,5 @@
 use env_logger::{Builder, Env};
+use wgpu::util::DeviceExt;
 use winit::window::Window;
 use winit::{
     error::EventLoopError,
@@ -7,6 +8,8 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::WindowBuilder,
 };
+
+mod texture;
 
 pub async fn run() -> Result<(), EventLoopError> {
     init_logger();
@@ -100,7 +103,64 @@ fn on_redraw_requested<'a>(
     }
 }
 
-#[allow(dead_code)]
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct Vertex {
+    position: [f32; 3],
+    tex_coords: [f32; 2],
+}
+
+impl Vertex {
+    fn desc() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 2]>()
+                        as wgpu::BufferAddress,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+            ],
+        }
+    }
+}
+
+const VERTICES: &[Vertex] = &[
+    Vertex {
+        position: [-0.0868241, 0.49240386, 0.0],
+        tex_coords: [0.4131759, 0.99240386],
+    }, // A
+    Vertex {
+        position: [-0.49513406, 0.06958647, 0.0],
+        tex_coords: [0.0048659444, 0.56958647],
+    }, // B
+    Vertex {
+        position: [-0.21918549, -0.44939706, 0.0],
+        tex_coords: [0.28081453, 0.05060294],
+    }, // C
+    Vertex {
+        position: [0.35966998, -0.3473291, 0.0],
+        tex_coords: [0.85967, 0.1526709],
+    }, // D
+    Vertex {
+        position: [0.44147372, 0.2347359, 0.0],
+        tex_coords: [0.9414737, 0.7347359],
+    }, // E
+];
+
+const INDICES: &[u16] = &[
+    0, 1, 4, //
+    1, 2, 4, //
+    2, 3, 4, /* padding */ 0,
+];
+
 struct State<'a> {
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,
@@ -111,9 +171,12 @@ struct State<'a> {
     clear_color: wgpu::Color,
     render_pipelines: Vec<wgpu::RenderPipeline>,
     active_render_pipeline_index: usize,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    n_indices: u32,
+    diffuse_bind_group: wgpu::BindGroup,
 }
 
-#[allow(dead_code)]
 impl<'a> State<'a> {
     // Creating some of the wgpu types requires async code
     async fn new(window: &'a Window) -> State<'a> {
@@ -211,6 +274,88 @@ impl<'a> State<'a> {
             desired_maximum_frame_latency: 2,
         };
 
+        surface.configure(&device, &surface_configuration);
+
+        let diffuse_texture = texture::Texture::from_bytes(
+            &device,
+            &queue,
+            include_bytes!("g25.png"),
+            Some("Diffuse Texture"),
+        )
+        .unwrap();
+
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float {
+                                filterable: true,
+                            },
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        // This should match the filterable field of the
+                        // corresponding Texture entry above.
+                        ty: wgpu::BindingType::Sampler(
+                            wgpu::SamplerBindingType::Filtering,
+                        ),
+                        count: None,
+                    },
+                ],
+                label: Some("Texture Bind Group Layour"),
+            });
+
+        let diffuse_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &texture_bind_group_layout,
+                entries: &[
+                    // @group(0) @binding(0)
+                    // var t_diffuse: texture_2d<f32>;
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(
+                            &diffuse_texture.view,
+                        ),
+                    },
+                    // @group(0) @binding(1)
+                    // var s_diffuse: sampler;
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(
+                            &diffuse_texture.sampler,
+                        ),
+                    },
+                ],
+                label: Some("diffuse_bind_group"),
+            });
+
+        // To access the create_buffer_init method on wgpu::Device, we'll have
+        // to import the DeviceExt
+        // (https://docs.rs/wgpu/latest/wgpu/util/trait.DeviceExt.html#tymethod.create_buffer_init)
+        // extension trait. For more information on extension traits, check out
+        // this article: http://xion.io/post/code/rust-extension-traits.html.
+        let pentagon_vertex_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Pentagon Vertex Buffer"),
+                contents: bytemuck::cast_slice(VERTICES),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+        let index_buffer =
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Index Buffer"),
+                contents: bytemuck::cast_slice(INDICES),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+
         let shader =
             device.create_shader_module(wgpu::ShaderModuleDescriptor {
                 label: Some("Shader"),
@@ -223,12 +368,14 @@ impl<'a> State<'a> {
             &device,
             &surface_configuration,
             &shader,
+            &texture_bind_group_layout,
         );
 
         let render_pipeline2 = Self::create_render_pipeline(
             &device,
             &surface_configuration,
             &device.create_shader_module(wgpu::include_wgsl!("shader2.wgsl")),
+            &texture_bind_group_layout,
         );
 
         Self {
@@ -240,6 +387,10 @@ impl<'a> State<'a> {
             window,
             render_pipelines: vec![render_pipeline, render_pipeline2],
             active_render_pipeline_index: 0,
+            vertex_buffer: pentagon_vertex_buffer,
+            index_buffer,
+            n_indices: INDICES.len() as u32,
+            diffuse_bind_group,
             clear_color: wgpu::Color {
                 r: 0.03,
                 g: 0.03,
@@ -253,11 +404,12 @@ impl<'a> State<'a> {
         device: &wgpu::Device,
         surface_configuration: &wgpu::SurfaceConfiguration,
         shader: &wgpu::ShaderModule,
+        texture_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> wgpu::RenderPipeline {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[],
+                bind_group_layouts: &[&texture_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -268,7 +420,7 @@ impl<'a> State<'a> {
                 vertex: wgpu::VertexState {
                     module: &shader,
                     entry_point: Some("vs_main"),
-                    buffers: &[],
+                    buffers: &[Vertex::desc()],
                     compilation_options:
                         wgpu::PipelineCompilationOptions::default(),
                 },
@@ -309,7 +461,7 @@ impl<'a> State<'a> {
         render_pipeline
     }
 
-    pub fn window(&self) -> &Window {
+    fn window(&self) -> &Window {
         &self.window
     }
 
@@ -401,7 +553,13 @@ impl<'a> State<'a> {
                 &self.render_pipelines[self.active_render_pipeline_index];
 
             render_pass.set_pipeline(&active_render_pipeline);
-            render_pass.draw(0..3, 0..1);
+            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(
+                self.index_buffer.slice(..),
+                wgpu::IndexFormat::Uint16,
+            );
+            render_pass.draw_indexed(0..self.n_indices, 0, 0..1);
         }
 
         // Submit will accept anything that implements `IntoIter`
@@ -412,7 +570,7 @@ impl<'a> State<'a> {
     }
 }
 
-pub fn init_logger() {
+fn init_logger() {
     let filter = Env::default().default_filter_or("learn_wgpu=info");
     Builder::from_env(filter).init();
 }
